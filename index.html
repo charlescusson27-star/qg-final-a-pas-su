@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="fr" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LE QG - Espace Collaboratif Lycée</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- SDK Firebase v10 -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        :root {
+            --btn-bg: #d97706;
+            --card-bg: rgba(10, 10, 10, 0.9);
+            --border-color: rgba(245, 158, 11, 0.4);
+        }
+        .dyn-btn { background-color: var(--btn-bg) !important; }
+        .dyn-btn:hover { filter: brightness(1.15); }
+        .dyn-card { background-color: var(--card-bg) !important; border-color: var(--border-color) !important; }
+    </style>
+</head>
+<body id="body-theme" class="bg-stone-950 text-amber-50 h-full flex flex-col font-sans bg-cover bg-center bg-fixed relative overflow-hidden">
+
+    <div id="video-bg-container" class="hidden fixed inset-0 z-0 pointer-events-none"></div>
+    <audio id="bg-audio" loop class="hidden"></audio>
+
+    <div id="app" class="h-full flex flex-col flex-1 backdrop-blur-sm bg-black/60 z-10 relative overflow-hidden">
+        <div class="flex-1 flex items-center justify-center p-4 text-center">
+            <div class="space-y-3">
+                <div class="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                <p class="text-amber-200 text-sm font-medium">Chargement de LE QG...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Visionneuse -->
+    <div id="file-viewer-modal" class="hidden fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4">
+        <div class="w-full max-w-5xl h-[85vh] dyn-card border rounded-3xl p-6 shadow-2xl flex flex-col space-y-4">
+            <div class="flex justify-between items-center border-b border-amber-900/40 pb-3">
+                <h3 id="viewer-title" class="font-black text-lg text-amber-400">Aperçu</h3>
+                <div class="flex gap-2 items-center">
+                    <a id="viewer-download-btn" href="#" download class="px-3 py-1.5 dyn-btn text-white rounded-xl text-xs font-bold flex items-center gap-1.5"><i class="fa-solid fa-download"></i> Télécharger</a>
+                    <button onclick="toggleModal('file-viewer-modal', false)" class="text-amber-200/70 hover:text-white p-2"><i class="fa-solid fa-xmark text-xl"></i></button>
+                </div>
+            </div>
+            <div id="viewer-content-container" class="flex-1 bg-stone-900 rounded-2xl overflow-hidden border border-amber-900/40 flex items-center justify-center"></div>
+        </div>
+    </div>
+
+    <!-- Toast Global -->
+    <div id="global-notification-toast" class="hidden fixed bottom-6 right-6 z-50 max-w-sm dyn-card border-2 border-amber-500 p-4 rounded-2xl shadow-2xl flex items-start gap-3">
+        <div class="text-amber-400 text-2xl"><i class="fa-solid fa-bell"></i></div>
+        <div class="flex-1 space-y-1">
+            <h4 class="font-bold text-xs text-amber-300" id="toast-title">LE QG</h4>
+            <p class="text-xs text-amber-100" id="toast-msg"></p>
+            <div id="toast-action" class="pt-1"></div>
+        </div>
+        <button onclick="toggleModal('global-notification-toast', false)" class="text-amber-200/50"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyDQp8qnPJ64u0dBMaSnOZN31BV30QaHz3k",
+            authDomain: "lqgp-9d3e0.firebaseapp.com",
+            projectId: "lqgp-9d3e0",
+            storageBucket: "lqgp-9d3e0.firebasestorage.app",
+            messagingSenderId: "542617927378",
+            appId: "1:542617927378:web:90aeb0b57805dabf27b70b"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const ADMIN_EMAIL = "charlescusson27@gmail.com";
+
+        const DB = {
+            async get(k, fb) {
+                try {
+                    let doc = await db.collection("leqg_data").doc(k).get();
+                    if (doc.exists) return doc.data().value;
+                } catch(e) {}
+                let item = localStorage.getItem('leqg_' + k);
+                return item ? JSON.parse(item) : fb;
+            },
+            async set(k, val) {
+                try { await db.collection("leqg_data").doc(k).set({ value: val }); } catch(e) {}
+                localStorage.setItem('leqg_' + k, JSON.stringify(val));
+            }
+        };
+
+        let state = { tab: 'home', sidebar: false, chatMode: 'general', targetUser: null, adminSub: 'users', mailSubBox: 'inbox', activeQuizId: null };
+        let countdownInterval = null;
+
+        async function init() {
+            if (!await DB.get('users', null)) {
+                await DB.set('users', [{ username: 'admin', lastName: 'Délégué', password: 'admin20', role: 'admin', status: 'active', avatar: { base: '🏰', style: 'bg-amber-600', accessory: '👑' }, mustChangePass: true, birthday: '2009-03-26', email: ADMIN_EMAIL }]);
+            }
+            let keys = ['messages', 'appreciations', 'custom_pages', 'hidden_pages', 'revision_sheets', 'exam_subjects', 'admin_calendar', 'quizzes', 'quiz_submissions', 'orientation_links', 'ideas_board', 'mail_inbox', 'mail_sent', 'mail_drafts', 'mail_archives', 'countdowns'];
+            for (let k of keys) { if (!await DB.get(k, null)) await DB.set(k, k === 'countdowns' ? [{ id: 1, title: 'Épreuves du Bac Pro', date: '2026-06-15T08:00' }] : (k.includes('mail_') || k === 'ideas_board' ? [] : {})); }
+
+            applyTheme();
+            checkBirthdays();
+            
+            // Sync silencieuse arrière-plan toutes les 60 secondes
+            setInterval(async () => {
+                for (let k of ['users', 'messages', 'ideas_board', 'countdowns', 'quizzes', 'mail_inbox', 'mail_sent', 'mail_drafts', 'mail_archives']) {
+                    let val = localStorage.getItem('leqg_' + k);
+                    if (val) await db.collection("leqg_data").doc(k).set({ value: JSON.parse(val) });
+                }
+            }, 60000);
+
+            setInterval(() => {
+                let u = getCurrentUser();
+                if (u && new Date().getHours() === 9 && new Date().getMinutes() === 0 && localStorage.getItem('leqg_cantine') !== new Date().toDateString()) {
+                    showToast("Rappel Cantine 🍽️", "Pense à réserver ta cantine !");
+                    localStorage.setItem('leqg_cantine', new Date().toDateString());
+                }
+            }, 30000);
+
+            render();
+        }
+
+        async function checkBirthdays() {
+            let u = getCurrentUser();
+            if (!u || u.role !== 'admin') return;
+            let users = await DB.get('users', []), today = new Date().toISOString().split('T')[0].slice(5);
+            if (localStorage.getItem('leqg_bday_checked') !== today) {
+                users.forEach(user => {
+                    if (user.birthday && user.birthday.slice(5) === today) {
+                        let age = new Date().getFullYear() - parseInt(user.birthday.split('-')[0]);
+                        let txt = `C'est l'anniversaire de ${user.username} (${age} ans) aujourd'hui !`;
+                        showToast("Joyeux Anniversaire ! 🎂", txt);
+                        addInboxMsg("Système QG", ADMIN_EMAIL, "Notification Anniversaire 🎂", txt);
+                    }
+                });
+                localStorage.setItem('leqg_bday_checked', today);
+            }
+        }
+
+        async function addInboxMsg(sender, email, subject, text, ticketRef = null) {
+            let inbox = await DB.get('mail_inbox', []);
+            let ticket = ticketRef || ("#QG-" + Math.floor(1000 + Math.random() * 9000));
+            inbox.unshift({ ticket, sender, email, subject, text, date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) });
+            await DB.set('mail_inbox', inbox);
+        }
+
+        async function applyTheme() {
+            let c = await DB.get('site_colors', { btnColor: '#d97706', cardBg: 'rgba(10, 10, 10, 0.9)', borderColor: 'rgba(245, 158, 11, 0.4)' });
+            document.documentElement.style.setProperty('--btn-bg', c.btnColor);
+            document.documentElement.style.setProperty('--card-bg', c.cardBg);
+            document.documentElement.style.setProperty('--border-color', c.borderColor);
+            document.getElementById('body-theme').style.backgroundImage = `url('${await DB.get('bg_value', 'https://images.unsplash.com/photo-1507783592120-a61f55877f6c?q=80&w=1920&auto=format&fit=crop')}')`;
+        }
+
+        function getCurrentUser() { return JSON.parse(localStorage.getItem('leqg_current_user') || 'null'); }
+        function showToast(title, msg) {
+            document.getElementById('toast-title').textContent = title;
+            document.getElementById('toast-msg').textContent = msg;
+            document.getElementById('global-notification-toast').classList.remove('hidden');
+            setTimeout(() => document.getElementById('global-notification-toast').classList.add('hidden'), 6000);
+        }
+        function toggleModal(id, show) { document.getElementById(id).classList.toggle('hidden', !show); }
+
+        function openFileViewer(title, url, type) {
+            document.getElementById('viewer-title').textContent = title;
+            document.getElementById('viewer-download-btn').href = url;
+            let c = document.getElementById('viewer-content-container');
+            c.innerHTML = type.includes('pdf') ? `<embed src="${url}" type="application/pdf" width="100%" height="100%" />` : `<img src="${url}" class="max-h-full object-contain rounded-xl" />`;
+            toggleModal('file-viewer-modal', true);
+        }
+
+        function renderAvatar(av) {
+            if (!av) return '<span class="text-3xl">🏰</span>';
+            if (typeof av === 'string') return `<span class="text-3xl">${av}</span>`;
+            return `<div class="relative inline-flex items-center justify-center w-12 h-12 rounded-2xl ${av.style || 'bg-amber-600'} border-2 border-amber-400 text-xl"><span>${av.base || '🏰'}</span><span class="absolute -bottom-1 -right-1 text-[10px] bg-black px-1 rounded-full border border-amber-500">${av.accessory || ''}</span></div>`;
+        }
+
+        async function render() {
+            if (countdownInterval) clearInterval(countdownInterval);
+            let app = document.getElementById('app'), user = getCurrentUser();
+            if (!user) return app.innerHTML = renderLogin();
+            if (user.status === 'masked') return app.innerHTML = `<div class="flex-1 flex flex-col items-center justify-center p-6 text-center"><h1 class="text-xl font-bold text-red-400">Compte Suspendu</h1><button onclick="logout()" class="mt-4 px-4 py-2 dyn-btn text-white rounded-xl text-xs">Déconnexion</button></div>`;
+            if (user.mustChangePass) return app.innerHTML = renderSetup();
+            app.innerHTML = await renderDashboard(user);
+            if (state.tab === 'home') startCountdownsTimer();
+        }
+
+        function renderLogin() {
+            return `<div class="flex-1 flex items-center justify-center p-4"><div class="w-full max-w-md dyn-card border rounded-3xl p-8 shadow-2xl space-y-6 text-center">
+                <div class="p-3 bg-amber-500/10 text-amber-400 rounded-2xl text-3xl inline-block"><i class="fa-solid fa-chess-rook"></i></div>
+                <h1 class="text-2xl font-black text-white">LE QG</h1>
+                <form onsubmit="handleLogin(event)" class="space-y-3 text-left">
+                    <input type="text" id="l-user" required placeholder="Identifiant" class="w-full px-4 py-3 bg-stone-900 border rounded-2xl text-xs text-amber-100">
+                    <input type="password" id="l-pass" required placeholder="Mot de passe" class="w-full px-4 py-3 bg-stone-900 border rounded-2xl text-xs text-amber-100">
+                    <button type="submit" class="w-full py-3 dyn-btn text-xs text-white font-bold rounded-2xl">Se connecter</button>
+                </form></div></div>`;
+        }
+
+        function renderSetup() {
+            return `<div class="flex-1 flex items-center justify-center p-4"><div class="w-full max-w-md dyn-card border rounded-3xl p-8 shadow-2xl space-y-4">
+                <h1 class="text-lg font-bold text-amber-400">Première Connexion</h1>
+                <form onsubmit="saveSetup(event)" class="space-y-3 text-xs">
+                    <input type="text" id="s-lastname" required placeholder="Nom de famille" class="w-full p-3 bg-stone-900 border rounded-xl text-white">
+                    <input type="email" id="s-email" placeholder="E-mail (recommandé pour notifications)" class="w-full p-3 bg-stone-900 border rounded-xl text-white">
+                    <input type="password" id="s-pass" required placeholder="Nouveau mot de passe" class="w-full p-3 bg-stone-900 border rounded-xl text-white">
+                    <input type="date" id="s-bday" required class="w-full p-3 bg-stone-900 border rounded-xl text-white">
+                    <button type="submit" class="w-full py-3 dyn-btn text-white font-bold rounded-xl">Valider</button>
+                </form></div></div>`;
+        }
+
+        async function renderDashboard(user) {
+            let hidden = await DB.get('hidden_pages', []), custom = await DB.get('custom_pages', []);
+            let navs = custom.filter(p => !hidden.includes('page_' + p.id)).map(p => sbBtn('page_' + p.id, p.title, p.icon || 'file-lines')).join('');
+
+            return `
+                <header class="bg-stone-950/80 border-b border-amber-900/40 px-4 py-3 flex justify-between items-center backdrop-blur-md">
+                    <div class="flex items-center gap-3">
+                        <button onclick="state.sidebar=!state.sidebar;render()" class="p-2 bg-stone-900 text-amber-100 rounded-xl"><i class="fa-solid fa-bars"></i></button>
+                        <span class="font-black text-amber-400 text-sm">LE QG (${user.username})</span>
+                    </div>
+                    <button onclick="logout()" class="px-3 py-1.5 bg-stone-900 text-amber-200 text-xs rounded-xl border">Déconnexion</button>
+                </header>
+                <div class="flex-1 flex overflow-hidden relative">
+                    <aside class="fixed inset-y-0 left-0 z-30 w-64 bg-stone-950/95 border-r border-amber-900/40 transform ${state.sidebar ? 'translate-x-0' : '-translate-x-full'} transition-transform flex flex-col p-4 pt-16 space-y-1 overflow-y-auto text-xs">
+                        ${!hidden.includes('home') ? sbBtn('home', 'Accueil', 'house') : ''}
+                        ${!hidden.includes('appreciations') ? sbBtn('appreciations', 'Appréciations', 'award') : ''}
+                        ${!hidden.includes('avatar') ? sbBtn('avatar', 'Mon Avatar', 'user-pen') : ''}
+                        ${!hidden.includes('chat') ? sbBtn('chat', 'Messagerie', 'comments') : ''}
+                        ${!hidden.includes('calendar') ? sbBtn('calendar', 'Agenda', 'calendar-days') : ''}
+                        ${!hidden.includes('quizzes') ? sbBtn('quizzes', 'Quiz', 'brain') : ''}
+                        ${!hidden.includes('ideas') ? sbBtn('ideas', 'Boîte à Idées', 'lightbulb') : ''}
+                        ${!hidden.includes('notes') ? sbBtn('notes', 'Bloc-Notes', 'note-sticky') : ''}
+                        ${navs}
+                        ${user.role === 'admin' ? sbBtn('admin', 'Espace Délégué', 'user-gear', 'text-amber-400 bg-amber-500/10') : ''}
+                    </aside>
+                    <main class="flex-1 overflow-y-auto p-4 md:p-6">${await renderContent(user)}</main>
+                </div>`;
+        }
+
+        function sbBtn(id, label, icon, extra = '') {
+            let active = state.tab === id;
+            return `<button onclick="state.tab='${id}';state.sidebar=false;render()" class="w-full text-left px-3 py-2.5 rounded-xl flex items-center gap-3 border transition-all ${active ? 'dyn-btn text-white font-bold' : 'text-amber-200/80 bg-stone-900/50 border-transparent hover:bg-stone-900'} ${extra}"><i class="fa-solid fa-${icon} w-4"></i> ${label}</button>`;
+        }
+
+        async function renderContent(user) {
+            if (state.tab.startsWith('page_')) {
+                let cp = (await DB.get('custom_pages', [])).find(x => x.id == state.tab.replace('page_', ''));
+                return cp ? `<div class="max-w-3xl mx-auto dyn-card border p-6 rounded-3xl space-y-4"><h2 class="text-2xl font-black text-amber-400">${cp.title}</h2>${cp.elements.map(e => e.type === 'text' ? `<p class="text-xs text-amber-100 whitespace-pre-wrap">${e.content}</p>` : `<button onclick="openFileViewer('${e.title}', '${e.fileData}', '${e.fileType}')" class="px-4 py-2 dyn-btn text-white rounded-xl text-xs font-bold">${e.title}</button>`).join('')}</div>` : '';
+            }
+            if (state.tab === 'home') return `<div class="max-w-3xl mx-auto dyn-card border p-8 rounded-3xl text-center space-y-3"><h2 class="text-2xl font-black text-white">Bienvenue sur LE QG !</h2><p class="text-xs text-amber-200/75">Ton espace collaboratif de lycée.</p></div>`;
+            if (state.tab === 'appreciations') return renderUserAppreciations(user);
+            if (state.tab === 'chat') return renderChat(user);
+            if (state.tab === 'calendar') return `<div class="max-w-3xl mx-auto dyn-card border p-6 rounded-3xl"><h2 class="text-xl font-black text-amber-400">Agenda</h2></div>`;
+            if (state.tab === 'quizzes') return `<div class="max-w-3xl mx-auto dyn-card border p-6 rounded-3xl"><h2 class="text-xl font-black text-amber-400">Quiz</h2></div>`;
+            if (state.tab === 'ideas') return renderIdeasPage(user);
+            if (state.tab === 'notes') return renderNotesPage(user);
+            if (state.tab === 'admin' && user.role === 'admin') return renderAdmin(user);
+            return '';
+        }
+
+        // --- BOÎTE À IDÉES ---
+        async function renderIdeasPage(user) {
+            let ideas = await DB.get('ideas_board', []);
+            return `<div class="max-w-2xl mx-auto space-y-4">
+                <div class="dyn-card border p-6 rounded-3xl space-y-3"><h2 class="text-xl font-black text-amber-400">Boîte à Idées</h2>
+                <form onsubmit="submitIdea(event)" class="space-y-2"><input type="text" id="i-title" required placeholder="Titre..." class="w-full p-2.5 bg-stone-900 border rounded-xl text-xs"><textarea id="i-desc" required placeholder="Description..." class="w-full p-2.5 bg-stone-900 border rounded-xl text-xs h-16"></textarea><button type="submit" class="w-full py-2 dyn-btn text-white rounded-xl text-xs font-bold">Proposer</button></form></div>
+                <div class="space-y-2">${ideas.map((i, idx) => `<div class="dyn-card border p-4 rounded-2xl text-xs space-y-2"><h4 class="font-bold text-amber-200">${i.title} (${i.author})</h4><p class="text-amber-100/80">${i.desc}</p><div class="flex gap-2"><button onclick="voteIdea(${idx}, 'up')" class="px-2 py-1 bg-emerald-600/30 text-emerald-300 rounded-lg">Pour (${i.votesUp||0})</button><button onclick="voteIdea(${idx}, 'down')" class="px-2 py-1 bg-red-600/30 text-red-300 rounded-lg">Contre (${i.votesDown||0})</button></div></div>`).join('')}</div></div>`;
+        }
+        async function submitIdea(e) {
+            e.preventDefault();
+            let ideas = await DB.get('ideas_board', []);
+            ideas.push({ title: document.getElementById('i-title').value, desc: document.getElementById('i-desc').value, author: getCurrentUser().username, votesUp: 0, votesDown: 0 });
+            await DB.set('ideas_board', ideas); render();
+        }
+        async function voteIdea(idx, type) {
+            let ideas = await DB.get('ideas_board', []);
+            ideas[idx][type === 'up' ? 'votesUp' : 'votesDown']++;
+            await DB.set('ideas_board', ideas); render();
+        }
+
+        // --- BLOC-NOTES ---
+        function renderNotesPage(user) {
+            return `<div class="max-w-2xl mx-auto dyn-card border p-6 h-[500px] flex flex-col rounded-3xl space-y-2"><h2 class="text-xl font-bold text-amber-400">Bloc-Notes</h2><textarea oninput="localStorage.setItem('leqg_note_${user.username}', this.value)" class="flex-1 w-full bg-stone-900 border p-3 rounded-xl text-xs text-amber-100 resize-none">${localStorage.getItem('leqg_note_'+user.username) || ''}</textarea></div>`;
+        }
+
+        // --- MESSAGERIE CHAT ---
+        async function renderChat(user) {
+            let users = await DB.get('users', []), msgs = await DB.get('messages', []);
+            let active = state.chatMode === 'general' ? msgs.filter(m => m.type === 'general') : msgs.filter(m => m.type === 'private' && (m.sender === user.username && m.recipient === state.targetUser || m.sender === state.targetUser && m.recipient === user.username));
+            return `<div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-4 h-[500px]">
+                <div class="dyn-card border p-3 flex flex-col space-y-2 rounded-3xl"><button onclick="state.chatMode='general';render()" class="p-2 rounded-xl bg-stone-900 text-xs font-bold text-amber-200">Général</button><div class="flex-1 overflow-y-auto space-y-1">${users.filter(u=>u.username!==user.username).map(u=>`<button onclick="state.chatMode='private';state.targetUser='${u.username}';render()" class="w-full text-left p-2 rounded-xl bg-stone-900 text-xs text-amber-200">${u.username}</button>`).join('')}</div></div>
+                <div class="md:col-span-3 dyn-card border p-4 flex flex-col justify-between rounded-3xl"><div class="flex-1 overflow-y-auto space-y-2">${active.map(m=>`<div class="p-2.5 bg-stone-900 rounded-xl text-xs"><span class="font-bold text-amber-400">${m.sender}:</span> ${m.text}</div>`).join('')}</div>
+                <form onsubmit="sendChat(event)" class="flex gap-2 pt-2"><input type="text" id="c-inp" required placeholder="Message..." class="flex-1 p-2.5 bg-stone-900 border rounded-xl text-xs"><button type="submit" class="dyn-btn px-4 text-white rounded-xl text-xs font-bold">Envoyer</button></form></div></div>`;
+        }
+        async function sendChat(e) {
+            e.preventDefault(); let txt = document.getElementById('c-inp').value, msgs = await DB.get('messages', []);
+            msgs.push({ type: state.chatMode, sender: getCurrentUser().username, recipient: state.targetUser, text: txt, time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) });
+            await DB.set('messages', msgs); render();
+        }
+
+        // --- ESPACE DÉLÉGUÉ (ADMIN) ---
+        async function renderAdmin(user) {
+            let users = await DB.get('users', []);
+            return `<div class="max-w-4xl mx-auto space-y-4">
+                <div class="dyn-card border p-4 rounded-3xl flex gap-2 flex-wrap text-xs">
+                    <button onclick="state.adminSub='users';render()" class="px-3 py-1.5 rounded-xl font-bold ${state.adminSub==='users'?'dyn-btn text-white':'bg-stone-900'}">Élèves</button>
+                    <button onclick="state.adminSub='mailcenter';render()" class="px-3 py-1.5 rounded-xl font-bold ${state.adminSub==='mailcenter'?'dyn-btn text-white':'bg-stone-900'}">Centre de Mails & Tickets</button>
+                </div>
+                ${state.adminSub === 'users' ? `<div class="dyn-card border p-6 rounded-3xl space-y-3"><h3 class="font-bold text-amber-300 text-xs">Liste des Élèves (${users.length-1})</h3>${users.filter(u=>u.role!=='admin').map(u=>`<div class="p-2 bg-stone-900 border rounded-xl text-xs flex justify-between"><span>${u.username} (${u.email||'Pas d\'email'})</span></div>`).join('')}</div>` : await renderAdminMailCenter(users)}</div>`;
+        }
+
+        async function renderAdminMailCenter(users) {
+            let inbox = await DB.get('mail_inbox', []), sent = await DB.get('mail_sent', []), drafts = await DB.get('mail_drafts', []), archives = await DB.get('mail_archives', []);
+            let list = state.mailSubBox === 'inbox' ? inbox : (state.mailSubBox === 'sent' ? sent : (state.mailSubBox === 'drafts' ? drafts : archives));
+            let query = (document.getElementById('ticket-search')?.value || '').toLowerCase();
+            if (query) list = list.filter(m => m.ticket?.toLowerCase().includes(query) || m.subject?.toLowerCase().includes(query));
+
+            return `<div class="dyn-card border p-6 rounded-3xl space-y-4 text-xs">
+                <div class="flex justify-between items-center"><h3 class="font-bold text-amber-300">Centre de Mails & Tickets</h3><input type="text" id="ticket-search" oninput="render()" value="${query}" placeholder="Rechercher #QG-..." class="p-2 bg-stone-900 border rounded-xl w-40 text-amber-100"></div>
+                <div class="flex gap-2 border-b border-amber-900/40 pb-2">
+                    <button onclick="state.mailSubBox='inbox';render()" class="px-2.5 py-1 rounded-lg ${state.mailSubBox==='inbox'?'dyn-btn text-white':'bg-stone-900'}">Réception (${inbox.length})</button>
+                    <button onclick="state.mailSubBox='sent';render()" class="px-2.5 py-1 rounded-lg ${state.mailSubBox==='sent'?'dyn-btn text-white':'bg-stone-900'}">Envoi (${sent.length})</button>
+                    <button onclick="state.mailSubBox='drafts';render()" class="px-2.5 py-1 rounded-lg ${state.mailSubBox==='drafts'?'dyn-btn text-white':'bg-stone-900'}">Brouillons (${drafts.length})</button>
+                    <button onclick="state.mailSubBox='archives';render()" class="px-2.5 py-1 rounded-lg ${state.mailSubBox==='archives'?'dyn-btn text-white':'bg-stone-900'}">Archives (${archives.length})</button>
+                </div>
+                <form onsubmit="sendMail(event)" class="space-y-2 bg-stone-900 p-4 rounded-2xl border">
+                    <input type="hidden" id="m-ticket">
+                    <div class="grid grid-cols-2 gap-2">
+                        <select id="m-rec" class="p-2.5 bg-stone-950 border rounded-xl text-amber-100"><option value="ALL">Tout le monde</option>${users.filter(u=>u.email&&u.role!=='admin').map(u=>`<option value="${u.email}">${u.username}</option>`).join('')}</select>
+                        <input type="text" id="m-ticket-show" placeholder="Ticket auto" class="p-2.5 bg-stone-950 border rounded-xl text-amber-300 font-bold" readonly>
+                    </div>
+                    <input type="text" id="m-subj" required placeholder="Sujet..." class="w-full p-2.5 bg-stone-950 border rounded-xl text-amber-100">
+                    <textarea id="m-body" required rows="3" placeholder="Message..." class="w-full p-2.5 bg-stone-950 border rounded-xl text-amber-100 resize-none"></textarea>
+                    <button type="submit" class="w-full py-2.5 dyn-btn text-white font-bold rounded-xl">Envoyer</button>
+                </form>
+                <div class="space-y-2 max-h-60 overflow-y-auto">${list.map((m, idx)=>`<div class="p-3 bg-stone-900 border rounded-xl space-y-1"><div class="flex justify-between font-bold text-amber-400"><span>${m.ticket} - ${m.subject}</span><span>${m.date}</span></div><p class="text-amber-100">${m.text}</p><button onclick="deleteMail('${state.mailSubBox}', ${idx})" class="text-red-400 text-[10px]">Supprimer</button></div>`).join('')}</div></div>`;
+        }
+
+        async function sendMail(e) {
+            e.preventDefault();
+            let ticket = document.getElementById('m-ticket').value || ("#QG-" + Math.floor(1000 + Math.random() * 9000));
+            let sent = await DB.get('mail_sent', []);
+            sent.unshift({ ticket, subject: "QG - " + document.getElementById('m-subj').value, text: document.getElementById('m-body').value, date: new Date().toLocaleDateString() });
+            await DB.set('mail_sent', sent);
+            showToast("Succès", "E-mail envoyé avec le ticket " + ticket);
+            render();
+        }
+        async function deleteMail(box, idx) {
+            let l = await DB.get('mail_' + box, []); l.splice(idx, 1);
+            await DB.set('mail_' + box, l); render();
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            let u = users = await DB.get('users', []), user = users.find(x => x.username === document.getElementById('l-user').value && x.password === document.getElementById('l-pass').value);
+            if (user) { localStorage.setItem('leqg_current_user', JSON.stringify(user)); render(); } else alert("Identifiants incorrects");
+        }
+
+        async function saveSetup(e) {
+            e.preventDefault();
+            let user = getCurrentUser(), users = await DB.get('users', []), idx = users.findIndex(u => u.username === user.username);
+            if (idx !== -1) {
+                users[idx].lastName = document.getElementById('s-lastname').value;
+                users[idx].email = document.getElementById('s-email').value;
+                users[idx].password = document.getElementById('s-pass').value;
+                users[idx].birthday = document.getElementById('s-bday').value;
+                users[idx].mustChangePass = false;
+                await DB.set('users', users);
+                localStorage.setItem('leqg_current_user', JSON.stringify(users[idx]));
+                render();
+            }
+        }
+
+        function logout() { localStorage.removeItem('leqg_current_user'); render(); }
+        window.onload = init;
+    </script>
+</body>
+</html>
